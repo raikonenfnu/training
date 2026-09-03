@@ -2427,12 +2427,22 @@ def _get_bw_pinned_configs() -> List[triton.Config]:
     #      waves_per_eu/SEQUENCE_PARALLEL/UNROLL/num_stages/num_warps).
     # Keep pre_hook=_bwd_pre_hook on every entry (the bwd configs require it).
     if torch.version.hip:
+        block_n = 128
+        try:
+            arch = torch.cuda.get_device_properties(0).gcnArchName or ""
+            version = tuple(int(part) for part in triton.__version__.split(".")[:2])
+            if "gfx1250" in arch and version >= (3, 8):
+                # BLOCK_N=128 reaches the 1024-VGPR ceiling and intermittently
+                # corrupts a store address. 64 uses 758 VGPRs without spilling.
+                block_n = 64
+        except (AssertionError, AttributeError, RuntimeError, ValueError):
+            pass
         return [
             # --- yambda bs=1024, L=2048 winner (from capture log) ---
             triton.Config(
                 {
                     "BLOCK_M": 32,
-                    "BLOCK_N": 128,
+                    "BLOCK_N": block_n,
                     "matrix_instr_nonkdim": 16,
                     "waves_per_eu": 0,
                     "SEQUENCE_PARALLEL": False,

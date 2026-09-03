@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Standalone gfx1250 reproducer for the ``_hstu_attn_bwd`` memory-access fault.
 
-This is defect 6 in docs/mi450.md reduced to a single Triton kernel. Default
-invocation faults in about 15 seconds on Triton main @ 7ff97e3109::
+This is defect 6 in docs/mi450.md reduced to a single Triton kernel. The
+original ``BLOCK_N=128`` config faults on Triton main @ 7ff97e3109::
 
     AMDGCN_USE_BUFFER_OPS=0 AMD_SERIALIZE_KERNEL=3 \
-      python scripts/repro_gfx1250_attn_bwd.py --part bwd --layout contiguous
+      python scripts/repro_gfx1250_attn_bwd.py --part bwd --layout contiguous \
+      --bw-config m=32,n=128,warps=4,stages=1,nonkdim=16,waves=0
 
     Memory access fault by GPU node-2 ... Reason: Page not present.
+
+On gfx1250 with Triton 3.8 or newer, the production default uses
+``BLOCK_N=64`` and this script is its randomized stress test.
 
 No dataset, no TBE, no TorchRec, no dataloader: just the HSTU jagged attention
 backward over a fresh random sequence layout each iteration. What the loop adds
@@ -41,6 +45,8 @@ import torch
 import triton
 
 from generative_recommenders.ops.triton.triton_hstu_attention import (
+    _bwd_pre_hook,
+    _hstu_attn_bwd,
     triton_hstu_attention_bwd,
     triton_hstu_attention_fwd,
 )
@@ -69,6 +75,11 @@ def _print_env() -> None:
         f"AMDGCN_USE_BUFFER_OPS={os.environ.get('AMDGCN_USE_BUFFER_OPS', '<unset>')} "
         f"AMD_SERIALIZE_KERNEL={os.environ.get('AMD_SERIALIZE_KERNEL', '<unset>')} "
         f"PYTORCH_CUDA_ALLOC_CONF={os.environ.get('PYTORCH_CUDA_ALLOC_CONF', '<unset>')}",
+        flush=True,
+    )
+    print(
+        "backward configs: "
+        + ", ".join(str(config) for config in _hstu_attn_bwd.configs),
         flush=True,
     )
 
@@ -199,6 +210,12 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--print-every", type=int, default=25)
     parser.add_argument(
+        "--bw-config",
+        default="",
+        help="override the backward config, for example "
+        "'m=32,n=64,warps=4,stages=1,nonkdim=16,waves=0,sp=0,unroll=1'",
+    )
+    parser.add_argument(
         "--contextual",
         type=int,
         default=CONTEXTUAL_SEQ_LEN,
@@ -219,6 +236,24 @@ def main() -> int:
 
     if os.environ.get("AMDGCN_USE_BUFFER_OPS") != "0":
         raise RuntimeError("set AMDGCN_USE_BUFFER_OPS=0 before running this repro")
+
+    if args.bw_config:
+        spec = dict(item.split("=") for item in args.bw_config.split(","))
+        config = triton.Config(
+            {
+                "BLOCK_M": int(spec.get("m", 32)),
+                "BLOCK_N": int(spec.get("n", 128)),
+                "matrix_instr_nonkdim": int(spec.get("nonkdim", 16)),
+                "waves_per_eu": int(spec.get("waves", 0)),
+                "SEQUENCE_PARALLEL": bool(int(spec.get("sp", 0))),
+                "UNROLL": int(spec.get("unroll", 1)),
+            },
+            num_stages=int(spec.get("stages", 1)),
+            num_warps=int(spec.get("warps", 4)),
+            pre_hook=_bwd_pre_hook,
+        )
+        _hstu_attn_bwd.configs = [config]
+        print(f"-- backward config override: {config}", flush=True)
 
     _print_env()
     device = torch.device("cuda")
