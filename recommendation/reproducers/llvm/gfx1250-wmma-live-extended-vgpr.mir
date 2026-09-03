@@ -1,0 +1,30 @@
+# RUN: llc -mtriple=amdgpu12.50 \
+# RUN:   -run-pass=post-RA-hazard-rec,amdgpu-lower-vgpr-encoding \
+# RUN:   -o - %s | FileCheck %s
+
+# This is the machine-level shape isolated from _hstu_attn_bwd: an extended
+# VGPR remains live across independent WMMAs. LLVM models no clobber because
+# the register does not overlap an explicit WMMA operand.
+---
+name: wmma_with_live_extended_vgpr
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr16
+
+    ; CHECK-LABEL: name: wmma_with_live_extended_vgpr
+    ; CHECK:      S_SET_VGPR_MSB 64, implicit-def $mode
+    ; CHECK-NEXT: $vgpr257 = V_LSHRREV_B32_e32
+    ; CHECK-NEXT: S_SET_VGPR_MSB 16513, implicit-def $mode
+    ; CHECK-NEXT: early-clobber $vgpr538_vgpr539_vgpr540_vgpr541_vgpr542_vgpr543_vgpr544_vgpr545 = V_WMMA_F32_16X16X32_BF16_w32_threeaddr
+    ; CHECK-NEXT: S_SET_VGPR_MSB 33154, implicit-def $mode
+    ; CHECK-NEXT: early-clobber $vgpr530_vgpr531_vgpr532_vgpr533_vgpr534_vgpr535_vgpr536_vgpr537 = V_WMMA_F32_16X16X32_BF16_w32_threeaddr
+    ; CHECK-NEXT: S_SET_VGPR_MSB 33284, implicit-def $mode
+    ; CHECK-NEXT: $vgpr0 = V_ADD_U32_e32 0, $vgpr257
+    ; CHECK-NEXT: S_ENDPGM 0
+    $vgpr257 = V_LSHRREV_B32_e32 1, $vgpr16, implicit $exec
+    early-clobber $vgpr538_vgpr539_vgpr540_vgpr541_vgpr542_vgpr543_vgpr544_vgpr545 = V_WMMA_F32_16X16X32_BF16_w32_threeaddr undef $vgpr510_vgpr511_vgpr512_vgpr513_vgpr514_vgpr515_vgpr516_vgpr517, undef $vgpr112_vgpr113_vgpr114_vgpr115_vgpr116_vgpr117_vgpr118_vgpr119, 8, 0, 0, 0, 0, 0, implicit $exec
+    early-clobber $vgpr530_vgpr531_vgpr532_vgpr533_vgpr534_vgpr535_vgpr536_vgpr537 = V_WMMA_F32_16X16X32_BF16_w32_threeaddr undef $vgpr554_vgpr555_vgpr556_vgpr557_vgpr558_vgpr559_vgpr560_vgpr561, undef $vgpr120_vgpr121_vgpr122_vgpr123_vgpr124_vgpr125_vgpr126_vgpr127, 8, 0, 0, 0, 0, 0, implicit $exec
+    $vgpr0 = V_ADD_U32_e32 0, $vgpr257, implicit $exec
+    S_ENDPGM 0
+...
